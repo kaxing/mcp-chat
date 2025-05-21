@@ -89,8 +89,8 @@ export class MCPClient {
       await fs.mkdir(getMCPChatDir(), { recursive: true });
       // Create chats subdirectory if it doesn't exist
       await fs.mkdir(getChatsDir(), { recursive: true });
-    } catch (error) {
-      console.error("Failed to create directories:", error);
+    } catch (error: any) {
+      console.error(`Error: Failed to create required directories at ${getMCPChatDir()}. Please check permissions and path validity. Details:`, error.message);
       throw error;
     }
   }
@@ -113,8 +113,8 @@ export class MCPClient {
         getHistoryFile(),
         this.commandHistory.join("\n") + "\n"
       );
-    } catch (error) {
-      console.error("Failed to save history:", error);
+    } catch (error: any) {
+      console.error(`Error: Failed to save command history to ${getHistoryFile()}. Please check permissions. Details:`, error.message);
     }
   }
 
@@ -196,8 +196,12 @@ export class MCPClient {
         }
         console.log("\n--- Continuing chat ---\n");
       }
-    } catch (error) {
-      console.error("Failed to load chat file:", error);
+    } catch (error: any) {
+      if (error.code === 'ENOENT') {
+        console.error(`Error: Chat file not found at "${chatFile}". Please ensure the file exists.`);
+      } else {
+        console.error(`Error: Failed to load chat file "${chatFile}". Details:`, error.message);
+      }
       throw error;
     }
   }
@@ -238,8 +242,8 @@ export class MCPClient {
         this.currentChatFile,
         JSON.stringify(chatData, null, 2)
       );
-    } catch (error) {
-      console.error("Failed to save chat file:", error);
+    } catch (error: any) {
+      console.error(`Error: Failed to save chat file to "${this.currentChatFile}". Please check permissions and path validity. Details:`, error.message);
     }
   }
 
@@ -355,8 +359,19 @@ export class MCPClient {
         `Connected to server "${serverWithoutCommand}" with tools:`,
         this.tools.map(({ name }) => name)
       );
-    } catch (e) {
-      console.log("Failed to connect to MCP server: ", e);
+    } catch (e: any) {
+      let errorMessage = `Failed to connect to MCP server "${serverScriptPath}".`;
+      if (e.code === 'ENOENT') {
+        errorMessage += `\nError: The script path was not found. Please check if the path is correct and the file exists.`;
+      } else if (e.message && (e.message.includes('permission denied') || e.message.includes('EACCES'))) {
+        errorMessage += `\nError: Permission denied. Please check if the script has execute permissions.`;
+      } else if (e.message) {
+        errorMessage += `\nDetails: ${e.message}`;
+      } else {
+        errorMessage += `\nAn unknown error occurred.`;
+      }
+      console.error(errorMessage);
+      
       // Clean up transport on error
       if (this.transport) {
         try {
@@ -369,7 +384,7 @@ export class MCPClient {
         }
         this.transport = null;
       }
-      throw e;
+      throw e; // Re-throw the original error after logging and cleanup
     }
   }
 
@@ -530,6 +545,10 @@ export class MCPClient {
             const match = args.match(/^(-n\s+)?(\d+)$/);
             if (match) {
               count = parseInt(match[2], 10);
+              if (isNaN(count) || count <= 0) {
+                console.log("Error: N must be a positive integer for history command.");
+                return true;
+              }
             } else {
               console.log("Usage: history [N] or history -n N");
               return true;
@@ -597,7 +616,7 @@ export class MCPClient {
         // Add message to history
         if (message.trim()) {
           // Save history before running each command
-          await this.saveHistory();
+          await this.saveHistory(); 
         }
 
         // Process the query with streaming response
@@ -609,9 +628,8 @@ export class MCPClient {
         // Save chat after each response
         await this.saveChatFile();
       }
-    } catch (err) {
-      console.error("Error with request");
-      console.error(err);
+     } catch (err: any) {
+       console.error("An unexpected error occurred in the chat loop. Details:", err.message || err);
     } finally {
       this.rl.close();
       this.rl = null;
