@@ -3,8 +3,18 @@ import { MCPClient } from '../src/interactive';
 import readline from 'readline/promises';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio';
 
+// Set up environment variable for tests
+process.env.ANTHROPIC_API_KEY = 'test-api-key';
+
 // Mock readline and other dependencies as needed
 vi.mock('readline/promises', () => ({
+  default: {
+    createInterface: vi.fn().mockReturnValue({
+      question: vi.fn(),
+      close: vi.fn(),
+      history: [],
+    }),
+  },
   createInterface: vi.fn().mockReturnValue({
     question: vi.fn(),
     close: vi.fn(),
@@ -35,8 +45,8 @@ describe('MCPClient', () => {
 
   beforeEach(() => {
     client = new MCPClient({});
-    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
   });
 
   afterEach(() => {
@@ -63,7 +73,7 @@ describe('MCPClient', () => {
       expect(result).toBe(true);
       expect(consoleLogSpy).toHaveBeenCalledWith('Usage: history [N] or history -n N');
     });
-    
+
     it('should handle "history -n abc" and log usage message', async () => {
       const result = await client['handleSpecialCommand']('history -n abc');
       expect(result).toBe(true);
@@ -86,7 +96,7 @@ describe('MCPClient', () => {
       expect(consoleLogSpy).toHaveBeenCalledWith('6  cmd6');
       expect(consoleLogSpy).not.toHaveBeenCalledWith('1  cmd1');
     });
-    
+
     it('should handle valid "history -n 5" and display command history', async () => {
       client['commandHistory'] = ['cmd1', 'cmd2', 'cmd3', 'cmd4', 'cmd5', 'cmd6'];
       const result = await client['handleSpecialCommand']('history -n 5');
@@ -115,21 +125,23 @@ describe('MCPClient', () => {
   describe('connectToServer', () => {
     let mcpClient: MCPClient;
     let consoleErrorSpyConnect: any;
-    let mockTransportInstance: any;
 
     beforeEach(() => {
       // Reset options to avoid interference between tests
-      mcpClient = new MCPClient({}); 
-      consoleErrorSpyConnect = vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.spyOn(console, 'warn').mockImplementation(() => {}); // Suppress warnings during tests
+      mcpClient = new MCPClient({});
+      consoleErrorSpyConnect = vi.spyOn(console, 'error').mockImplementation(() => { });
+      vi.spyOn(console, 'warn').mockImplementation(() => { }); // Suppress warnings during tests
 
-      // Mock the transport instance and its close method
-      mockTransportInstance = {
-        close: vi.fn().mockResolvedValue(undefined),
-      };
-      // Mock the StdioClientTransport constructor to return our mock instance
-      (StdioClientTransport as any).mockImplementation(() => mockTransportInstance);
-      
+      // Mock the StdioClientTransport constructor to return unique instances
+      let callCount = 0;
+      (StdioClientTransport as any).mockImplementation(() => {
+        callCount++;
+        return {
+          close: vi.fn().mockResolvedValue(undefined),
+          id: callCount, // Add unique identifier to distinguish instances
+        };
+      });
+
       // Mock mcp.connect and mcp.listTools
       mcpClient['mcp'].connect = vi.fn();
       mcpClient['mcp'].listTools = vi.fn().mockResolvedValue({ tools: [] });
@@ -147,7 +159,7 @@ describe('MCPClient', () => {
       (StdioClientTransport as any).mockImplementation(() => { throw enoentError; });
 
       await expect(mcpClient.connectToServer(serverPath)).rejects.toThrow(enoentError);
-      
+
       expect(consoleErrorSpyConnect).toHaveBeenCalledWith(
         expect.stringContaining(`Failed to connect to MCP server "${serverPath}".`)
       );
@@ -162,14 +174,14 @@ describe('MCPClient', () => {
       const eaccesError = new Error('EACCES: permission denied') as any;
       eaccesError.code = 'EACCES'; // Some systems might set this
       (StdioClientTransport as any).mockImplementation(() => { throw eaccesError; });
-      
+
       // Assign a dummy transport to check if it's closed and nulled
       const dummyTransport = { close: vi.fn().mockResolvedValue(undefined) };
       mcpClient['transport'] = dummyTransport as any;
 
 
       await expect(mcpClient.connectToServer(serverPath)).rejects.toThrow(eaccesError);
-      
+
       expect(consoleErrorSpyConnect).toHaveBeenCalledWith(
         expect.stringContaining(`Failed to connect to MCP server "${serverPath}".`)
       );
@@ -179,7 +191,7 @@ describe('MCPClient', () => {
       expect(dummyTransport.close).toHaveBeenCalled();
       expect(mcpClient['transport']).toBeNull();
     });
-    
+
     it('should log generic error message for other errors and clean up', async () => {
       const serverPath = 'error.js';
       const genericError = new Error('Some other error');
@@ -209,18 +221,18 @@ describe('MCPClient', () => {
       await mcpClient.connectToServer(firstServerPath);
       const firstTransportInstance = mcpClient['transport']; // Keep a reference
       expect(firstTransportInstance).not.toBeNull();
-      if(firstTransportInstance) { // type guard
+      if (firstTransportInstance) { // type guard
         expect((firstTransportInstance as any).close).not.toHaveBeenCalled();
       }
 
 
       // Mock listTools for the second call
-      mcpClient['mcp'].listTools = vi.fn().mockResolvedValue({ tools: [{name: 'toolB', description: 'descB', inputSchema: {}}] });
-      
+      mcpClient['mcp'].listTools = vi.fn().mockResolvedValue({ tools: [{ name: 'toolB', description: 'descB', inputSchema: {} }] });
+
       // Second connection (successful)
       await mcpClient.connectToServer(secondServerPath);
       const secondTransportInstance = mcpClient['transport'];
-      
+
       expect(secondTransportInstance).not.toBeNull();
       expect(secondTransportInstance).not.toBe(firstTransportInstance); // New transport instance
 
@@ -233,10 +245,10 @@ describe('MCPClient', () => {
       await mcpClient.connectToServer(serverPath);
       expect(StdioClientTransport).toHaveBeenCalledWith(expect.objectContaining({
         command: process.platform === "win32" ? "python" : "python3",
-        args: ['my-arg'],
+        args: ['script.py', 'my-arg'],
       }));
     });
-    
+
     it('should handle "uv python" server paths correctly', async () => {
       const serverPath = 'uv python script.py my-arg';
       await mcpClient.connectToServer(serverPath);
@@ -254,7 +266,7 @@ describe('MCPClient', () => {
         args: ['script.js', 'my-arg'],
       }));
     });
-    
+
     it('should handle JS server paths with "bun" correctly', async () => {
       const serverPath = 'bun script.js my-arg';
       await mcpClient.connectToServer(serverPath);
@@ -263,7 +275,7 @@ describe('MCPClient', () => {
         args: ['script.js', 'my-arg'],
       }));
     });
-    
+
     it('should handle npx server paths correctly', async () => {
       const serverPath = 'npx some-package --arg';
       await mcpClient.connectToServer(serverPath);
@@ -272,7 +284,7 @@ describe('MCPClient', () => {
         args: ['some-package', '--arg'],
       }));
     });
-    
+
     it('should handle uvx server paths correctly', async () => {
       const serverPath = 'uvx some-package --arg';
       await mcpClient.connectToServer(serverPath);
@@ -283,13 +295,13 @@ describe('MCPClient', () => {
     });
 
     it('should handle docker server paths correctly', async () => {
-        const serverPath = 'docker run my-image --param';
-        await mcpClient.connectToServer(serverPath);
-        expect(StdioClientTransport).toHaveBeenCalledWith(expect.objectContaining({
-          command: 'docker',
-          args: ['run', 'my-image', '--param'],
-        }));
-      });
+      const serverPath = 'docker run my-image --param';
+      await mcpClient.connectToServer(serverPath);
+      expect(StdioClientTransport).toHaveBeenCalledWith(expect.objectContaining({
+        command: 'docker',
+        args: ['run', 'my-image', '--param'],
+      }));
+    });
   });
 
   describe('chatLoop', () => {
@@ -298,14 +310,14 @@ describe('MCPClient', () => {
 
     beforeEach(() => {
       mcpClient = new MCPClient({});
-      
+
       // Mock methods that are called within chatLoop
       vi.spyOn(mcpClient, 'loadHistory').mockResolvedValue(undefined);
       vi.spyOn(mcpClient, 'loadChatFile').mockResolvedValue(undefined);
       vi.spyOn(mcpClient, 'handleSpecialCommand').mockResolvedValue(false); // Assume not a special command
       vi.spyOn(mcpClient, 'processQueryStream').mockResolvedValue(undefined);
       vi.spyOn(mcpClient, 'saveChatFile').mockResolvedValue(undefined);
-      
+
       mockReadlineInterface = {
         question: vi.fn(),
         close: vi.fn(),
@@ -329,22 +341,26 @@ describe('MCPClient', () => {
 
       // Check that saveHistory was called with the message
       expect(saveHistorySpy).toHaveBeenCalled();
-      
+
       // Check that processQueryStream was called after saveHistory
       // This is an indirect way to test the await, by ensuring the call order
       const saveHistoryOrder = saveHistorySpy.mock.invocationCallOrder[0];
       const processQueryStreamOrder = processQueryStreamSpy.mock.invocationCallOrder[0];
-      
+
       expect(saveHistoryOrder).toBeLessThan(processQueryStreamOrder);
       expect(processQueryStreamSpy).toHaveBeenCalledWith(testMessage, expect.any(Function));
       expect(mcpClient['rl']).toBeNull(); // Check readline is closed
     });
-    
+
     it('should not call saveHistory for an empty message', async () => {
       mockReadlineInterface.question.mockResolvedValueOnce('').mockResolvedValueOnce('exit');
 
-      const saveHistorySpy = vi.spyOn(mcpClient, 'saveHistory');
-      
+      const saveHistorySpy = vi.spyOn(mcpClient, 'saveHistory').mockResolvedValue(undefined);
+      // Ensure handleSpecialCommand returns true for "exit" to exit the loop
+      vi.spyOn(mcpClient, 'handleSpecialCommand').mockImplementation(async (message: string) => {
+        return message.trim().toLowerCase() === 'exit';
+      });
+
       await mcpClient.chatLoop();
 
       expect(saveHistorySpy).not.toHaveBeenCalled();
@@ -363,11 +379,11 @@ describe('MCPClient', () => {
       expect(mockReadlineInterface.question).toHaveBeenCalledTimes(1);
       expect(mcpClient['rl']).toBeNull(); // Check readline is closed
     });
-    
+
     it('should load chat file if options.chatFile is provided', async () => {
       const chatFilePath = 'test-chat.json';
       mcpClient = new MCPClient({ chatFile: chatFilePath });
-      
+
       // Re-spy on methods for the new client instance
       const loadHistorySpy = vi.spyOn(mcpClient, 'loadHistory').mockResolvedValue(undefined);
       const loadChatFileSpy = vi.spyOn(mcpClient, 'loadChatFile').mockResolvedValue(undefined);

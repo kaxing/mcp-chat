@@ -4,6 +4,9 @@ import path from "path";
 import os from "os";
 import { getDefaultConfigPath, parseConfigFile } from "../src/index.js";
 
+// Set up environment variable for tests
+process.env.ANTHROPIC_API_KEY = 'test-api-key';
+
 // Mock fs and os modules
 vi.mock("fs/promises");
 vi.mock("os", () => ({
@@ -72,7 +75,7 @@ describe("Claude Config Parsing", () => {
     process.env.APPDATA = "C:\\Users\\testuser\\AppData\\Roaming";
 
     // Mock console.error to suppress expected error messages
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => { });
   });
 
   afterEach(() => {

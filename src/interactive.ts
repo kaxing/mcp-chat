@@ -18,11 +18,6 @@ import os from "os";
 import { Stream } from "@anthropic-ai/sdk/streaming.mjs";
 import { DEFAULT_MODEL } from "./constants.js";
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-if (!ANTHROPIC_API_KEY) {
-  throw new Error("ANTHROPIC_API_KEY is not set");
-}
-
 const MAX_TOKENS = 4096;
 const GREEN = "\x1b[32m";
 const BLUE = "\x1b[34m";
@@ -61,7 +56,7 @@ interface ChatFileFormat {
 
 export class MCPClient {
   private mcp: Client;
-  private anthropic: Anthropic;
+  private anthropic: Anthropic | null = null;
   private transport: StdioClientTransport | null = null;
   private tools: Tool[] = [];
   private messageHistory: MessageParam[] = [];
@@ -76,11 +71,19 @@ export class MCPClient {
     this.model = options.model || DEFAULT_MODEL;
     this.systemPrompt = options.systemPrompt;
 
-    // Initialize Anthropic client and MCP client
-    this.anthropic = new Anthropic({
-      apiKey: ANTHROPIC_API_KEY,
-    });
+    // Initialize MCP client
     this.mcp = new Client({ name: "mcp-client-cli", version: "1.0.0" });
+  }
+
+  private getAnthropicClient(): Anthropic {
+    if (!this.anthropic) {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) {
+        throw new Error("ANTHROPIC_API_KEY is not set");
+      }
+      this.anthropic = new Anthropic({ apiKey });
+    }
+    return this.anthropic;
   }
 
   public async ensureDirectories(): Promise<void> {
@@ -254,12 +257,28 @@ export class MCPClient {
      * @param serverScriptPath - Path to the server script (.py or .js)
      */
     try {
-      // Determine script type and appropriate command
-      const isJs = serverScriptPath.endsWith(".js");
-      const isPy = serverScriptPath.endsWith(".py");
-      const isDocker = serverScriptPath.includes("docker");
-      const isNpx = serverScriptPath.includes("npx");
-      const isUvx = serverScriptPath.includes("uvx");
+      // Parse the command to get the first word
+      const allArgs = serverScriptPath.split(" ");
+      const firstArg = allArgs[0];
+
+      // Check for special command prefixes
+      const isNpxCommand = firstArg === "npx";
+      const isUvxCommand = firstArg === "uvx";
+      const isDockerCommand = firstArg === "docker";
+      const isNodeCommand = firstArg === "node";
+      const isBunCommand = firstArg === "bun";
+      const isPythonCommand = firstArg === "python" || firstArg === "python3";
+      const isUvCommand = firstArg === "uv";
+
+      // For determining file type, look at the actual script file
+      const scriptFile = isNpxCommand || isUvxCommand || isDockerCommand ||
+        isNodeCommand || isBunCommand || isPythonCommand || isUvCommand
+        ? (allArgs.length > 1 ? allArgs[1] : "")
+        : firstArg;
+
+      const isJs = scriptFile.endsWith(".js");
+      const isPy = scriptFile.endsWith(".py");
+
       let serverWithoutCommand = serverScriptPath;
 
       // Clean up any existing transport
@@ -272,39 +291,50 @@ export class MCPClient {
         this.transport = null;
       }
 
-      if (isNpx) {
-        const allArgs = serverScriptPath.split(" ");
-        const command = allArgs[0];
-        // Remove 'npx' from the beginning of args if present
-        const args = command === "npx" ? allArgs.slice(1) : allArgs;
-
+      if (isNpxCommand) {
         // Initialize transport and connect to server
         this.transport = new StdioClientTransport({
-          command,
-          args,
+          command: "npx",
+          args: allArgs.slice(1),
         });
         this.mcp.connect(this.transport);
-        serverWithoutCommand = args.join(" ");
-      } else if (isUvx) {
-        const allArgs = serverScriptPath.split(" ");
-        const command = allArgs[0];
-        // Remove 'uvx' from the beginning of args if present
-        const args = command === "uvx" ? allArgs.slice(1) : allArgs;
-
+        serverWithoutCommand = allArgs.slice(1).join(" ");
+      } else if (isUvxCommand) {
         // Initialize transport and connect to server
         this.transport = new StdioClientTransport({
-          command,
-          args,
+          command: "uvx",
+          args: allArgs.slice(1),
         });
         this.mcp.connect(this.transport);
-        serverWithoutCommand = args.join(" ");
-      } else if (isDocker) {
-        const allArgs = serverScriptPath.split(" ");
-        const command = allArgs[0];
-        // Remove 'docker' from the beginning of args if present
-        const args = command === "docker" ? allArgs.slice(1) : allArgs;
-
+        serverWithoutCommand = allArgs.slice(1).join(" ");
+      } else if (isDockerCommand) {
         // Initialize transport and connect to server
+        this.transport = new StdioClientTransport({
+          command: "docker",
+          args: allArgs.slice(1),
+        });
+        this.mcp.connect(this.transport);
+        serverWithoutCommand = allArgs.slice(1).join(" ");
+      } else if (isNodeCommand) {
+        // Handle "node script.js" format
+        this.transport = new StdioClientTransport({
+          command: "node",
+          args: allArgs.slice(1),
+        });
+        this.mcp.connect(this.transport);
+        serverWithoutCommand = allArgs.slice(1).join(" ");
+      } else if (isBunCommand) {
+        // Handle "bun script.js" format
+        this.transport = new StdioClientTransport({
+          command: "bun",
+          args: allArgs.slice(1),
+        });
+        this.mcp.connect(this.transport);
+        serverWithoutCommand = allArgs.slice(1).join(" ");
+      } else if (isPythonCommand || (isUvCommand && allArgs.length > 1 && allArgs[1] === "python")) {
+        // Handle "python script.py" or "uv python script.py" format
+        const command = isUvCommand ? "uv" : firstArg;
+        const args = isUvCommand ? allArgs.slice(1) : allArgs.slice(1);
         this.transport = new StdioClientTransport({
           command,
           args,
@@ -312,31 +342,13 @@ export class MCPClient {
         this.mcp.connect(this.transport);
         serverWithoutCommand = args.join(" ");
       } else {
+        // Default handling for bare script paths
         if (!isJs && !isPy) {
           throw new Error("Server script must be a .js or .py file");
         }
 
-        let command = process.execPath;
-        let args = [serverScriptPath];
-        if (isPy) {
-          const allArgs = serverScriptPath.split(" ");
-          const pyCommand = allArgs[0];
-          if (pyCommand === "uv") {
-            // Use 'uv' command for Python scripts
-            command = pyCommand;
-          } else {
-            // They will need to be in venv
-            command = process.platform === "win32" ? "python" : "python3";
-          }
-          args = allArgs.slice(1);
-        } else if (isJs) {
-          const allArgs = serverScriptPath.split(" ");
-          const jsCommand = allArgs[0];
-          if (jsCommand === "node" || jsCommand === "bun") {
-            command = jsCommand;
-            args = allArgs.slice(1);
-          }
-        }
+        let command = isJs ? process.execPath : (process.platform === "win32" ? "python" : "python3");
+        let args = allArgs; // Use all arguments including the script file
 
         // Initialize transport and connect to server
         this.transport = new StdioClientTransport({
@@ -371,7 +383,7 @@ export class MCPClient {
         errorMessage += `\nAn unknown error occurred.`;
       }
       console.error(errorMessage);
-      
+
       // Clean up transport on error
       if (this.transport) {
         try {
@@ -395,7 +407,7 @@ export class MCPClient {
     stream: false
   ): Promise<Anthropic.Messages.Message>;
   private async createRequest(stream: boolean = false) {
-    return this.anthropic.messages.create({
+    return this.getAnthropicClient().messages.create({
       model: this.model,
       max_tokens: MAX_TOKENS,
       messages: this.messageHistory,
@@ -542,7 +554,7 @@ export class MCPClient {
 
           if (args) {
             // Handle both "history N" and "history -n N" formats
-            const match = args.match(/^(-n\s+)?(\d+)$/);
+            const match = args.match(/^(-n\s+)?(-?\d+)$/);
             if (match) {
               count = parseInt(match[2], 10);
               if (isNaN(count) || count <= 0) {
@@ -616,7 +628,7 @@ export class MCPClient {
         // Add message to history
         if (message.trim()) {
           // Save history before running each command
-          await this.saveHistory(); 
+          await this.saveHistory();
         }
 
         // Process the query with streaming response
@@ -628,8 +640,8 @@ export class MCPClient {
         // Save chat after each response
         await this.saveChatFile();
       }
-     } catch (err: any) {
-       console.error("An unexpected error occurred in the chat loop. Details:", err.message || err);
+    } catch (err: any) {
+      console.error("An unexpected error occurred in the chat loop. Details:", err.message || err);
     } finally {
       this.rl.close();
       this.rl = null;
